@@ -1,4 +1,6 @@
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton
+import numpy as np
+import torch
+from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QPushButton, QMessageBox
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import QTimer
 import PyQt5
@@ -7,53 +9,80 @@ from PyQt5.QtGui import QIcon
 from PyQt5 import QtGui
 from typing import List
 from GooseReplayUI import Ui_MainWindow
+import win32gui
+import time
+from PIL import ImageGrab
+from auto_stop import GooseStopper
+from config import *
 # pyuic5 GooseReplay.ui -o GooseReplayUI.py
-# pyinstaller  -D -w main.py -p GooseReplayUI.py
-
-image_list = []
-
-
-
+# pyinstaller -D -w main.py -p GooseReplayUI.py
 
 
 class GooseReplay(QMainWindow, Ui_MainWindow):
-    def __init__(self, background, image_list):
+    def __init__(self):
         # 使用父类的构造函数，即初始化列表
         super(GooseReplay, self).__init__()
         self.setupUi(self)
         self.cur = -1
         self.recording = True
+        self.neutron = torch.load('goose_stopper_1.0.th')
 
-        self.timer = QTimer(self)
-        self.timer.timeout.connect(self.grab)
-        self.timer.start(1000)
+        self.eye = QTimer(self)
+        self.eye.timeout.connect(self.grab_frame)
+        self.eye.start(1000)
+
+        self.brain = QTimer(self)
+        self.brain.timeout.connect(self.recognize)
+        self.brain.start(5000)
 
         self.pushButton.clicked.connect(self.backward5)
         self.pushButton_2.clicked.connect(self.backward1)
         self.pushButton_3.clicked.connect(self.forward1)
         self.pushButton_4.clicked.connect(self.forward5)
-        self.latest.clicked.connect(self.to_latest)
-        self.oldest.clicked.connect(self.to_oldest)
+        self.latest.clicked.connect(self.tolatest)
+        self.oldest.clicked.connect(self.tooldest)
         self.clear.clicked.connect(self.clear_images)
-        self.pause.clicked.connect(self.pause_resume)
+
+        self.pause.clicked.connect(self.switch_recording)
         self.pause.setText('点击暂停')
 
-        self.image_list = image_list
+        self.image_list = []
 
-    def pause_resume(self):
+    def closeEvent(self, a0: QtGui.QCloseEvent) -> None:
+        if config['zz_remind']:
+            message = QMessageBox()
+            message.setText('记得关闭ZZ加速器！')
+            message.setWindowTitle('小提示')
+            ret_val = message.exec_()
+
+    def recognize(self):
+        if len(self.image_list) == 0:
+            return
+        image = self.image_list[-1][1]  # get latest image
+        data = np.asarray(image).transpose(2, 0, 1)[np.newaxis, ...]
+        data = torch.tensor(data, dtype=torch.float)
+        result = self.neutron(data).item()
+        if result > 0.5 and not self.recording:  # in gaming
+            self.switch_recording()
+            print('brain said:"start record"')
+        elif result < 0.5 and self.recording:
+            self.switch_recording()
+            print('brain said:"stop record"')
+
+    def switch_recording(self):
         if self.recording:
-            self.timer.stop()
+            self.eye.stop()
             self.recording = False
             self.pause.setText('点击开始')
         else:
-            self.timer.start()
+            self.eye.start()
             self.recording = True
             self.pause.setText('点击暂停')
 
     def update_index(self):
         if len(self.image_list) == 0:
             return
-        self.index_represent.setText(f'此图距当前时间第{self.cur + 1}近，共{len(self.image_list)}张')
+        self.index_represent.setText(f'此图距当前时间第{len(self.image_list) - self.cur}近，共{len(self.image_list)}张')
 
     def show_picture(self):
         if len(self.image_list) == 0:
@@ -67,69 +96,67 @@ class GooseReplay(QMainWindow, Ui_MainWindow):
         self.label.setPixmap(pix)
         self.label.show()
 
-    def to_latest(self):
+    def tooldest(self):
         if len(self.image_list) == 0:
             return
         self.cur = 0
         self.show_picture()
         self.update_index()
 
-    def to_oldest(self):
+    def tolatest(self):
         if len(self.image_list) == 0:
             return
         self.cur = len(self.image_list) - 1
         self.show_picture()
         self.update_index()
 
-    def forward5(self):
+    def backward5(self):
         if len(self.image_list) == 0:
             return
         if 0 <= self.cur - 5 < len(self.image_list):
             self.cur -= 5
         else:
-            self.to_latest()
-        self.show_picture()
-        self.update_index()
-
-    def forward1(self):
-        if len(self.image_list) == 0:
-            return
-        if 0 <= self.cur - 1 < len(self.image_list):
-            self.cur -= 1
-        else:
-            self.to_latest()
+            self.tooldest()
         self.show_picture()
         self.update_index()
 
     def backward1(self):
         if len(self.image_list) == 0:
             return
-        if 0 <= self.cur + 1 < len(self.image_list):
-            self.cur += 1
+        if 0 <= self.cur - 1 < len(self.image_list):
+            self.cur -= 1
         else:
-            self.to_oldest()
+            self.tooldest()
         self.show_picture()
         self.update_index()
 
-    def backward5(self):
+    def forward1(self):
+        if len(self.image_list) == 0:
+            return
+        if 0 <= self.cur + 1 < len(self.image_list):
+            self.cur += 1
+        else:
+            self.tolatest()
+        self.show_picture()
+        self.update_index()
+
+    def forward5(self):
         if len(self.image_list) == 0:
             return
         if self.cur + 5 < len(self.image_list):
             self.cur += 5
         else:
-            self.to_oldest()
+            self.tolatest()
         self.show_picture()
         self.update_index()
 
     def clear_images(self):
         self.cur = -1
-        self.image_list[:] = []
+        self.image_list.clear()
         self.label.clear()
         self.index_represent.setText('将GooseGooseDuck置于顶层以录制')
 
-    def grab(self):
-        import time
-
+    def grab_frame(self):
         def get_window_pos(name):
             import win32gui
             name = name
@@ -142,9 +169,6 @@ class GooseReplay(QMainWindow, Ui_MainWindow):
                 return win32gui.GetWindowRect(handle), handle
 
         def fetch_image():
-            import win32gui
-            import time
-            from PIL import ImageGrab
             (x1, y1, x2, y2), handle = get_window_pos('Goose Goose Duck')
             if win32gui.GetForegroundWindow() != handle:
                 return
@@ -152,25 +176,20 @@ class GooseReplay(QMainWindow, Ui_MainWindow):
             # 截图
             grab_image = ImageGrab.grab((x1, y1, x2, y2))
             return grab_image
-        # print('grab')
+
         max_images = 180
         if (image := fetch_image()) is not None:
-            image_list.insert(0, (time.time(), image))
-            if len(image_list) > max_images:
-                image_list.pop()
-
-        # time.sleep(0.5)
-        # print([t for t, image in image_list])
+            if image.size == (1616, 936):
+                image.save(f'frames/{time.strftime("%Y-%m-%d-%H-%M-%S.png", time.localtime())}', format='png')
+            self.image_list.append((time.time(), image))
+            if len(self.image_list) > max_images:
+                self.image_list.pop(0)
+                if self.cur > 0:
+                    self.cur -= 1
 
 
 if __name__ == '__main__':
-    # 获取系统参数列表
     app = QApplication(sys.argv)
-
-    # 创建实体对象
-    main = GooseReplay(None, image_list)
-    # 显示窗体
+    main = GooseReplay()
     main.show()
-
-    # 进入主循环，安全退出程序
     sys.exit(app.exec_())
